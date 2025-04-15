@@ -160,6 +160,8 @@ choice BOARD_TYPE
         bool "SenseCAP Watcher"
     config BOARD_TYPE_DOIT_S3_AIBOX
         bool "四博智联AI陪伴盒子"
+    config BOARD_TYPE_Freenove_Media_Kit
+        bool "Freenove Media Kit for ESP32-S3"
 endchoice
 
 choice DISPLAY_OLED_TYPE
