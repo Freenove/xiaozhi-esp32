@@ -368,7 +368,7 @@ void Application::Start() {
     board.StartNetwork();
 
     // Check for new firmware version or get the MQTT broker address
-    CheckNewVersion();
+    //CheckNewVersion();
 
     // Initialize the protocol
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
