@@ -5,18 +5,19 @@
 #include "display/lcd_display.h"
 #include "font_awesome_symbols.h"
 #include "application.h"
-#include "button.h"
 #include "knob.h"
 #include "config.h"
 #include "led/single_led.h"
 #include "iot/thing_manager.h"
 #include "power_save_timer.h"
+#include "sscma_camera.h"
 
 #include <esp_log.h>
 #include "esp_check.h"
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_spd2010.h>
+#include <esp_adc/adc_oneshot.h>
 #include <driver/spi_master.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
@@ -25,9 +26,9 @@
 #include <iot_knob.h>
 #include <esp_io_expander_tca95xx_16bit.h>
 #include <esp_sleep.h>
-#include "esp_console.h"
-#include "esp_mac.h"
-#include "nvs_flash.h"
+#include <esp_console.h>
+#include <esp_mac.h>
+#include <nvs_flash.h>
 
 #include "assets/lang_config.h"
 
@@ -95,6 +96,10 @@ private:
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
     uint32_t long_press_cnt_;
+    button_driver_t* btn_driver_ = nullptr;
+    static SensecapWatcher* instance_;
+    SscmaCamera* camera_ = nullptr;
+
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
         power_save_timer_->OnEnterSleepMode([this]() {
@@ -229,30 +234,28 @@ private:
     }
 
     void InitializeButton() {
-        button_config_t btn_config = {
-            .type = BUTTON_TYPE_CUSTOM,
-            .long_press_time = 2000,
-            .short_press_time = 50,
-            .custom_button_config = {
-                .active_level = 0,
-                .button_custom_init =nullptr,
-                .button_custom_get_key_value = [](void *param) -> uint8_t {
-                    auto self = static_cast<SensecapWatcher*>(param);
-                    return self->IoExpanderGetLevel(BSP_KNOB_BTN);
-                },
-                .button_custom_deinit = nullptr,
-                .priv = this,
-            },
-        };
+        // 设置静态实例指针
+        instance_ = this;
         
         // watcher 是通过长按滚轮进行开机的, 需要等待滚轮释放, 否则用户开机松手时可能会误触成单击
         ESP_LOGI(TAG, "waiting for knob button release");
         while(IoExpanderGetLevel(BSP_KNOB_BTN) == 0) {
-            vTaskDelay(50 / portTICK_PERIOD_MS);
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
 
-        btns = iot_button_create(&btn_config);
-        iot_button_register_cb(btns, BUTTON_SINGLE_CLICK, [](void* button_handle, void* usr_data) {
+        button_config_t btn_config = {
+            .long_press_time = 2000,
+            .short_press_time = 0
+        };
+        btn_driver_ = (button_driver_t*)calloc(1, sizeof(button_driver_t));
+        btn_driver_->enable_power_save = false;
+        btn_driver_->get_key_level = [](button_driver_t *button_driver) -> uint8_t {
+            return !instance_->IoExpanderGetLevel(BSP_KNOB_BTN);
+        };
+        
+        ESP_ERROR_CHECK(iot_button_create(&btn_config, btn_driver_, &btns));
+        
+        iot_button_register_cb(btns, BUTTON_SINGLE_CLICK, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<SensecapWatcher*>(usr_data);
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
@@ -261,7 +264,8 @@ private:
             self->power_save_timer_->WakeUp();
             app.ToggleChatState();
         }, this);
-        iot_button_register_cb(btns, BUTTON_LONG_PRESS_START, [](void* button_handle, void* usr_data) {
+        
+        iot_button_register_cb(btns, BUTTON_LONG_PRESS_START, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<SensecapWatcher*>(usr_data);
             bool is_charging = (self->IoExpanderGetLevel(BSP_PWR_VBUS_IN_DET) == 0);
             self->long_press_cnt_ = 0;
@@ -273,7 +277,7 @@ private:
             }
         }, this);
 
-        iot_button_register_cb(btns, BUTTON_LONG_PRESS_HOLD, [](void* button_handle, void* usr_data) {
+        iot_button_register_cb(btns, BUTTON_LONG_PRESS_HOLD, nullptr, [](void* button_handle, void* usr_data) {
             auto self = static_cast<SensecapWatcher*>(usr_data);
             self->long_press_cnt_++; // 每隔20ms加一
             // 长按10s 恢复出厂设置: 2+0.02*400 = 10
@@ -283,10 +287,22 @@ private:
                 esp_restart();
             }
         }, this);
-
     }
 
     void InitializeSpi() {
+        ESP_LOGI(TAG, "Initialize SSCMA SPI bus");
+        spi_bus_config_t spi_cfg = {0};
+
+        spi_cfg.mosi_io_num = BSP_SPI2_HOST_MOSI;
+        spi_cfg.miso_io_num = BSP_SPI2_HOST_MISO;
+        spi_cfg.sclk_io_num = BSP_SPI2_HOST_SCLK;
+        spi_cfg.quadwp_io_num = -1;
+        spi_cfg.quadhd_io_num = -1;
+        spi_cfg.isr_cpu_id = ESP_INTR_CPU_AFFINITY_1;
+        spi_cfg.max_transfer_sz = 4095;
+   
+        ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &spi_cfg, SPI_DMA_CH_AUTO));
+
         ESP_LOGI(TAG, "Initialize QSPI bus");
 
         spi_bus_config_t qspi_cfg = {0};
@@ -467,7 +483,6 @@ private:
             .func = NULL,
             .argtable = NULL,
             .func_w_context = [](void *context,int argc, char** argv) -> int {
-                auto self = static_cast<SensecapWatcher*>(context);
                 nvs_flash_erase();
                 esp_restart();
                 return 0;
@@ -501,6 +516,27 @@ private:
         ESP_ERROR_CHECK(esp_console_start_repl(repl));
     }
 
+    void InitializeCamera() {
+
+        ESP_LOGI(TAG, "Initialize Camera");
+
+        // !!!NOTE: SD Card use same SPI bus as sscma client, so we need to disable SD card CS pin first
+        const gpio_config_t io_config = {
+            .pin_bit_mask = (1ULL << BSP_SD_SPI_CS),
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        esp_err_t ret = gpio_config(&io_config);
+        if (ret != ESP_OK)
+            return;
+
+        gpio_set_level(BSP_SD_SPI_CS, 1);
+
+        camera_ = new SscmaCamera(io_exp_handle);
+    }
+
 public:
     SensecapWatcher() {
         ESP_LOGI(TAG, "Initialize Sensecap Watcher");
@@ -512,6 +548,7 @@ public:
         InitializeButton();
         InitializeKnob();
         Initializespd2010Display();
+        InitializeCamera();
         InitializeIot();
         GetBacklight()->RestoreBrightness();
     }
@@ -573,6 +610,13 @@ public:
         }
         return true;
     }
+
+    virtual Camera* GetCamera() override {
+        return camera_;
+    }
 };
 
 DECLARE_BOARD(SensecapWatcher);
+
+// 定义静态成员变量
+SensecapWatcher* SensecapWatcher::instance_ = nullptr;
