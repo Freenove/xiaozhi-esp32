@@ -2,7 +2,7 @@
     "target": "esp32s3",
     "builds": [
         {
-            "name": "freenove-media-kit",
+            "name": "freenove-media-kit-1.14-lcd",
             "sdkconfig_append": []
         }
     ]
