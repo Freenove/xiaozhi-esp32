@@ -154,7 +154,9 @@ class FreenoveMediaKit : public WifiBoard {
           !WifiStation::GetInstance().IsConnected()) {
         ResetWifiConfiguration();
       }
-      app.ToggleChatState();
+      //app.ToggleChatState();
+      std::string wake_word = "Hi, ESP!";
+      app.WakeWordInvoke(wake_word);
     });
   }
 
@@ -167,6 +169,21 @@ class FreenoveMediaKit : public WifiBoard {
     adcButton4.OnClick([this]() { ESP_LOGI(TAG, "adcButton4 Click"); });
   }
 #endif  // CONFIG_SOC_ADC_SUPPORTED
+
+    bool CameraSetAeLevel(int level) {
+        sensor_t *s = esp_camera_sensor_get();
+        if (s == nullptr) {
+            ESP_LOGE(TAG, "Failed to get camera sensor");
+            return false;
+        }
+        
+        esp_err_t err = s->set_ae_level(s, level);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to set ae level: %d", err);
+            return false;
+        }
+        return true;
+    }
 
     void InitializeCamera() {
         camera_config_t config = {};
@@ -197,6 +214,7 @@ class FreenoveMediaKit : public WifiBoard {
         camera_ = new Esp32Camera(config);
         camera_->SetHMirror(false);
         camera_->SetVFlip(true);
+        CameraSetAeLevel(-3);
     }
 
   // 物联网初始化，添加对 AI 可见设备
