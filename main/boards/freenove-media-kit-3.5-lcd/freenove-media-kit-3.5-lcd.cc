@@ -182,6 +182,16 @@ class FreenoveMediaKit : public WifiBoard {
             ESP_LOGE(TAG, "Failed to set ae level: %d", err);
             return false;
         }
+        err = s->set_brightness(s, 3);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to set brightness: %d", err);
+            return false;
+        }
+        err = s->set_saturation(s, 3);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to set saturation: %d", err);
+            return false;
+        }
         return true;
     }
 
