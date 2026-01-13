@@ -8,11 +8,10 @@
 #include <button_gpio.h>
 #include <functional>
 
-
 class Button {
 public:
     Button(button_handle_t button_handle);
-    Button(gpio_num_t gpio_num, bool active_high = false, uint16_t long_press_time = 0, uint16_t short_press_time = 0);
+    Button(gpio_num_t gpio_num, bool active_high = false, uint16_t long_press_time = 0, uint16_t short_press_time = 0, bool enable_power_save = false);
     ~Button();
 
     void OnPressDown(std::function<void()> callback);
@@ -40,5 +39,11 @@ public:
     AdcButton(const button_adc_config_t& adc_config);
 };
 #endif
+
+class PowerSaveButton : public Button {
+public:
+    PowerSaveButton(gpio_num_t gpio_num) : Button(gpio_num, false, 0, 0, true) {
+    }
+};
 
 #endif // BUTTON_H_

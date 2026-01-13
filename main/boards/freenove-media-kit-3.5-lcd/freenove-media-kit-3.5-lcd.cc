@@ -5,20 +5,17 @@
 #include <wifi_station.h>
 
 #include "application.h"
-#include "audio_codecs/no_audio_codec.h"
+#include "codecs/no_audio_codec.h"
 #include "button.h"
 #include "config.h"
 #include "display/lcd_display.h"
-#include "iot/thing_manager.h"
-#include "led/single_led.h"
+#include "mcp_server.h"
+#include "led/circular_strip.h"
 #include "system_reset.h"
 #include "wifi_board.h"
 #include "esp32_camera.h"
 
 #define TAG "FreenoveMediaKit"
-
-LV_FONT_DECLARE(font_puhui_16_4);
-LV_FONT_DECLARE(font_awesome_16_4);
 
 #define LCD_SPI_HOST SPI3_HOST
 #define LCD_RST_PIN GPIO_NUM_20
@@ -138,27 +135,19 @@ class FreenoveMediaKit : public WifiBoard {
     esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
     display_ = new SpiLcdDisplay(
         panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X,
-        DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY,
-        {
-            .text_font = &font_puhui_16_4,
-            .icon_font = &font_awesome_16_4,
-            .emoji_font = DISPLAY_HEIGHT >= 240 ? font_emoji_64_init()
-                                                : font_emoji_32_init(),
-        });
+        DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
   }
 
   void InitializeButtons() {
     boot_button_.OnClick([this]() {
       auto &app = Application::GetInstance();
-      if (app.GetDeviceState() == kDeviceStateStarting &&
-          !WifiStation::GetInstance().IsConnected()) {
-        ResetWifiConfiguration();
+      if (app.GetDeviceState() == kDeviceStateStarting) {
+        EnterWifiConfigMode();
       }
-      //app.ToggleChatState();
-      std::string wake_word = "Hi, ESP!";
-      app.WakeWordInvoke(wake_word);
+      app.ToggleChatState();
     });
   }
+
 
 #if CONFIG_SOC_ADC_SUPPORTED
   void InitializeAdcButtons() {
@@ -170,68 +159,50 @@ class FreenoveMediaKit : public WifiBoard {
   }
 #endif  // CONFIG_SOC_ADC_SUPPORTED
 
-    bool CameraSetAeLevel(int level) {
-        sensor_t *s = esp_camera_sensor_get();
-        if (s == nullptr) {
-            ESP_LOGE(TAG, "Failed to get camera sensor");
-            return false;
-        }
-        
-        esp_err_t err = s->set_ae_level(s, level);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to set ae level: %d", err);
-            return false;
-        }
-        err = s->set_brightness(s, 3);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to set brightness: %d", err);
-            return false;
-        }
-        err = s->set_saturation(s, 3);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to set saturation: %d", err);
-            return false;
-        }
-        return true;
-    }
+  void InitializeCamera() {
+      static esp_cam_ctlr_dvp_pin_config_t dvp_pin_config = {
+          .data_width = CAM_CTLR_DATA_WIDTH_8,
+          .data_io = {
+              [0] = CAMERA_PIN_D0,
+              [1] = CAMERA_PIN_D1,
+              [2] = CAMERA_PIN_D2,
+              [3] = CAMERA_PIN_D3,
+              [4] = CAMERA_PIN_D4,
+              [5] = CAMERA_PIN_D5,
+              [6] = CAMERA_PIN_D6,
+              [7] = CAMERA_PIN_D7,
+          },
+          .vsync_io = CAMERA_PIN_VSYNC,
+          .de_io = CAMERA_PIN_HREF,
+          .pclk_io = CAMERA_PIN_PCLK,
+          .xclk_io = CAMERA_PIN_XCLK,
+      };
 
-    void InitializeCamera() {
-        camera_config_t config = {};
-        config.pin_d0 = CAMERA_PIN_D0;
-        config.pin_d1 = CAMERA_PIN_D1;
-        config.pin_d2 = CAMERA_PIN_D2;
-        config.pin_d3 = CAMERA_PIN_D3;
-        config.pin_d4 = CAMERA_PIN_D4;
-        config.pin_d5 = CAMERA_PIN_D5;
-        config.pin_d6 = CAMERA_PIN_D6;
-        config.pin_d7 = CAMERA_PIN_D7;
-        config.pin_xclk = CAMERA_PIN_XCLK;
-        config.pin_pclk = CAMERA_PIN_PCLK;
-        config.pin_vsync = CAMERA_PIN_VSYNC;
-        config.pin_href = CAMERA_PIN_HREF;
-        config.pin_sccb_sda = CAMERA_PIN_SIOD;  
-        config.pin_sccb_scl = CAMERA_PIN_SIOC;
-        config.sccb_i2c_port = 0;
-        config.pin_pwdn = CAMERA_PIN_PWDN;
-        config.pin_reset = CAMERA_PIN_RESET;
-        config.xclk_freq_hz = XCLK_FREQ_HZ;
-        config.pixel_format = PIXFORMAT_RGB565;
-        config.frame_size = FRAMESIZE_QVGA;
-        config.jpeg_quality = 12;
-        config.fb_count = 1;
-        config.fb_location = CAMERA_FB_IN_PSRAM;
-        config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
-        camera_ = new Esp32Camera(config);
-        camera_->SetHMirror(false);
-        camera_->SetVFlip(true);
-        CameraSetAeLevel(-3);
-    }
+      esp_video_init_sccb_config_t sccb_config = {
+          .init_sccb = true,
+          .i2c_config = {
+              .port = 1,
+              .scl_pin = CAMERA_PIN_SIOC,
+              .sda_pin = CAMERA_PIN_SIOD,
+          },
+          .freq = 100000,
+      };
 
-  // 物联网初始化，添加对 AI 可见设备
-  void InitializeIot() {
-    auto &thing_manager = iot::ThingManager::GetInstance();
-    thing_manager.AddThing(iot::CreateThing("Speaker"));
-    thing_manager.AddThing(iot::CreateThing("Screen"));
+      esp_video_init_dvp_config_t dvp_config = {
+          .sccb_config = sccb_config,
+          .reset_pin = CAMERA_PIN_RESET,
+          .pwdn_pin = CAMERA_PIN_PWDN,
+          .dvp_pin = dvp_pin_config,
+          .xclk_freq = XCLK_FREQ_HZ,
+      };
+
+      esp_video_init_config_t video_config = {
+          .dvp = &dvp_config,
+      };
+
+      camera_ = new Esp32Camera(video_config);
+      camera_->SetHMirror(false);
+      camera_->SetVFlip(true);
   }
 
  public:
@@ -253,12 +224,11 @@ class FreenoveMediaKit : public WifiBoard {
     InitializeAdcButtons();
 #endif  // CONFIG_SOC_ADC_SUPPORTED
     InitializeCamera();
-    InitializeIot();
     GetBacklight()->SetBrightness(100);
   }
 
   virtual Led *GetLed() override {
-    static SingleLed led(BUILTIN_LED_GPIO);
+    static CircularStrip led(BUILTIN_LED_GPIO, BUILTIN_LED_NUM);
     return &led;
   }
 
@@ -266,9 +236,8 @@ class FreenoveMediaKit : public WifiBoard {
     static NoAudioCodecSimplex audio_codec(
         AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
         AUDIO_I2S_SPK_GPIO_BCLK, AUDIO_I2S_SPK_GPIO_LRCK,
-        AUDIO_I2S_SPK_GPIO_DOUT, I2S_STD_SLOT_BOTH, AUDIO_I2S_MIC_GPIO_SCK,
-        AUDIO_I2S_MIC_GPIO_WS, AUDIO_I2S_MIC_GPIO_DIN, I2S_STD_SLOT_BOTH);
-
+        AUDIO_I2S_SPK_GPIO_DOUT, I2S_STD_SLOT_RIGHT, AUDIO_I2S_MIC_GPIO_SCK,
+        AUDIO_I2S_MIC_GPIO_WS, AUDIO_I2S_MIC_GPIO_DIN, I2S_STD_SLOT_RIGHT);
     return &audio_codec;
   }
 

@@ -1,9 +1,8 @@
 #include "wifi_board.h"
 #include "display/lcd_display.h"
 #include "esp_lcd_sh8601.h"
-#include "font_awesome_symbols.h"
 
-#include "audio_codecs/box_audio_codec.h"
+#include "codecs/box_audio_codec.h"
 #include "application.h"
 #include "button.h"
 #include "led/single_led.h"
@@ -12,7 +11,6 @@
 #include "power_save_timer.h"
 #include "axp2101.h"
 #include "i2c_device.h"
-#include <wifi_station.h>
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
@@ -26,9 +24,6 @@
 #include <lvgl.h>
 
 #define TAG "WaveshareEsp32s3TouchAMOLED1inch75"
-
-LV_FONT_DECLARE(font_puhui_30_4);
-LV_FONT_DECLARE(font_awesome_30_4);
 
 class Pmic : public Axp2101 {
 public:
@@ -111,17 +106,7 @@ public:
                      bool mirror_y,
                      bool swap_xy)
         : SpiLcdDisplay(io_handle, panel_handle,
-                        width, height, offset_x, offset_y, mirror_x, mirror_y, swap_xy,
-                        {
-                            .text_font = &font_puhui_30_4,
-                            .icon_font = &font_awesome_30_4,
-#if CONFIG_USE_WECHAT_MESSAGE_STYLE
-                            .emoji_font = font_emoji_32_init(),
-#else
-                            .emoji_font = font_emoji_64_init(),
-#endif
-                        })
-    {
+                        width, height, offset_x, offset_y, mirror_x, mirror_y, swap_xy) {
         DisplayLockGuard lock(this);
         lv_obj_set_style_pad_left(status_bar_, LV_HOR_RES*  0.1, 0);
         lv_obj_set_style_pad_right(status_bar_, LV_HOR_RES*  0.1, 0);
@@ -161,15 +146,10 @@ private:
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
         power_save_timer_->OnEnterSleepMode([this]() {
-            ESP_LOGI(TAG, "Enabling sleep mode");
-            auto display = GetDisplay();
-            display->SetChatMessage("system", "");
-            display->SetEmotion("sleepy");
+            GetDisplay()->SetPowerSaveMode(true);
             GetBacklight()->SetBrightness(20); });
         power_save_timer_->OnExitSleepMode([this]() {
-            auto display = GetDisplay();
-            display->SetChatMessage("system", "");
-            display->SetEmotion("neutral");
+            GetDisplay()->SetPowerSaveMode(false);
             GetBacklight()->RestoreBrightness(); });
         power_save_timer_->OnShutdownRequest([this](){ 
             pmic_->PowerOff(); });
@@ -218,8 +198,9 @@ private:
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
             auto& app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
-                ResetWifiConfiguration();
+            if (app.GetDeviceState() == kDeviceStateStarting) {
+                EnterWifiConfigMode();
+                return;
             }
             app.ToggleChatState();
         });
@@ -308,10 +289,10 @@ private:
     void InitializeTools() {
         auto &mcp_server = McpServer::GetInstance();
         mcp_server.AddTool("self.system.reconfigure_wifi",
-            "Reboot the device and enter WiFi configuration mode.\n"
+            "End this conversation and enter WiFi configuration mode.\n"
             "**CAUTION** You must ask the user to confirm this action.",
             PropertyList(), [this](const PropertyList& properties) {
-                ResetWifiConfiguration();
+                EnterWifiConfigMode();
                 return true;
             });
     }
@@ -368,12 +349,11 @@ public:
         return true;
     }
 
-    virtual void SetPowerSaveMode(bool enabled) override {
-        if (!enabled)
-        {
+    virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
+        if (level != PowerSaveLevel::LOW_POWER) {
             power_save_timer_->WakeUp();
         }
-        WifiBoard::SetPowerSaveMode(enabled);
+        WifiBoard::SetPowerSaveLevel(level);
     }
 };
 

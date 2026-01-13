@@ -4,7 +4,6 @@
 #include "button.h"
 #include "config.h"
 #include "mcp_server.h"
-#include <wifi_station.h>
 #include <esp_log.h>
 #include <driver/i2c_master.h>
 #include <driver/spi_common.h>
@@ -23,6 +22,7 @@
 #include "servo_dog_ctrl.h"
 #include "led_strip.h"
 #include "driver/rmt_tx.h"
+#include "device_state.h"
 
 #include "sdkconfig.h"
 
@@ -170,8 +170,10 @@ private:
 
         boot_button_.OnClick([this]() {
             auto &app = Application::GetInstance();
-            if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
-                ResetWifiConfiguration();
+            // During startup (before connected), pressing BOOT button enters Wi-Fi config mode without reboot
+            if (app.GetDeviceState() == kDeviceStateStarting) {
+                EnterWifiConfigMode();
+                return;
             }
             app.ToggleChatState();
         });
@@ -284,13 +286,14 @@ private:
         ESP_LOGI(TAG, "Create emoji widget, panel: %p, panel_io: %p", panel, panel_io);
         display_ = new anim::EmojiWidget(panel, panel_io);
 
+#if CONFIG_ESP_CONSOLE_NONE
         servo_dog_ctrl_config_t config = {
             .fl_gpio_num = FL_GPIO_NUM,
             .fr_gpio_num = FR_GPIO_NUM,
             .bl_gpio_num = BL_GPIO_NUM,
             .br_gpio_num = BR_GPIO_NUM,
         };
-#if CONFIG_ESP_CONSOLE_NONE
+
         servo_dog_ctrl_init(&config);
 #endif
     }
@@ -378,7 +381,7 @@ private:
             int r = properties["r"].value<int>();
             int g = properties["g"].value<int>();
             int b = properties["b"].value<int>();
-            
+
             led_on_ = true;
             SetLedColor(r, g, b);
             return true;

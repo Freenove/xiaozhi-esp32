@@ -1,35 +1,47 @@
-#include <esp_log.h>
-#include <driver/i2c_master.h>
-#include <driver/spi_common.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
+
 #include <wifi_station.h>
-#include "application.h"
-#include "audio_codecs/no_audio_codec.h"
-#include "audio_codecs/es8311_audio_codec.h"
-// #include "codecs/no_audio_codec.h"
-// #include "codecs/es8311_audio_codec.h"
-#include "button.h"
+#include "wifi_board.h"
+#include "codecs/es8311_audio_codec.h"
 #include "display/lcd_display.h"
+#include "application.h"
+#include "button.h"
+#include "config.h"
+#include "mcp_server.h"
+
+#include <esp_log.h>
+#include <driver/i2c_master.h>
+#include <driver/spi_common.h>
+
 #include "led/single_led.h"
 #include "system_reset.h"
-#include "wifi_board.h"
-#include "mcp_server.h"
-#include "config.h"
-
 #include "esp_lcd_ili9341.h"
 
 #define TAG "FreenoveESP32S3Display"
-
-LV_FONT_DECLARE(font_puhui_16_4);
-LV_FONT_DECLARE(font_awesome_16_4);
 
 class FreenoveESP32S3Display : public WifiBoard {
  private:
   Button boot_button_;
   LcdDisplay *display_;
   i2c_master_bus_handle_t codec_i2c_bus_;
+
+  void InitializeI2c() {
+      i2c_master_bus_config_t i2c_bus_cfg = {
+          .i2c_port = AUDIO_CODEC_I2C_NUM,
+          .sda_io_num = AUDIO_CODEC_I2C_SDA_PIN,
+          .scl_io_num = AUDIO_CODEC_I2C_SCL_PIN,
+          .clk_source = I2C_CLK_SRC_DEFAULT,
+          .glitch_ignore_cnt = 7,
+          .intr_priority = 0,
+          .trans_queue_depth = 0,
+          .flags = {
+              .enable_internal_pullup = 1,
+          },
+      };
+      ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &codec_i2c_bus_));
+  }
 
   void InitializeSpi() {
     spi_bus_config_t buscfg = {};
@@ -42,6 +54,17 @@ class FreenoveESP32S3Display : public WifiBoard {
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
   }
 
+  void InitializeButtons() {
+    boot_button_.OnClick([this]() {
+      auto &app = Application::GetInstance();
+      if (app.GetDeviceState() == kDeviceStateStarting) {
+        EnterWifiConfigMode();
+      }
+      app.ToggleChatState();
+    });
+  }
+
+  
   void InitializeLcdDisplay() {
     esp_lcd_panel_io_handle_t panel_io = nullptr;
     esp_lcd_panel_handle_t panel = nullptr;
@@ -72,41 +95,14 @@ class FreenoveESP32S3Display : public WifiBoard {
     esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
     esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
     display_ = new SpiLcdDisplay(panel_io, panel, 
-        DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, 
-        DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY,
-        {
-            .text_font = &font_puhui_16_4,
-            .icon_font = &font_awesome_16_4,
-            .emoji_font = DISPLAY_HEIGHT >= 240 ? font_emoji_64_init() : font_emoji_32_init(),
-        });
+        DISPLAY_WIDTH, DISPLAY_HEIGHT, 
+        DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, 
+        DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
   }
 
-  void InitializeI2c() {
-      i2c_master_bus_config_t i2c_bus_cfg = {
-          .i2c_port = AUDIO_CODEC_I2C_NUM,
-          .sda_io_num = AUDIO_CODEC_I2C_SDA_PIN,
-          .scl_io_num = AUDIO_CODEC_I2C_SCL_PIN,
-          .clk_source = I2C_CLK_SRC_DEFAULT,
-          .glitch_ignore_cnt = 7,
-          .intr_priority = 0,
-          .trans_queue_depth = 0,
-          .flags = {
-              .enable_internal_pullup = 1,
-          },
-      };
-      ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &codec_i2c_bus_));
+  void InitializeTools() {
   }
 
-  void InitializeButtons() {
-    boot_button_.OnClick([this]() {
-      auto &app = Application::GetInstance();
-      if (app.GetDeviceState() == kDeviceStateStarting &&
-          !WifiStation::GetInstance().IsConnected()) {
-        ResetWifiConfiguration();
-      }
-      app.ToggleChatState();
-    });
-  }
 
  public:
   FreenoveESP32S3Display(): boot_button_(BOOT_BUTTON_GPIO)
@@ -115,6 +111,7 @@ class FreenoveESP32S3Display : public WifiBoard {
     InitializeSpi();
     InitializeLcdDisplay();
     InitializeButtons();
+    InitializeTools();
     GetBacklight()->SetBrightness(100);
   }
 
@@ -134,8 +131,7 @@ class FreenoveESP32S3Display : public WifiBoard {
   virtual Display *GetDisplay() override { return display_; }
 
   virtual Backlight *GetBacklight() override {
-    static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN,
-                                  DISPLAY_BACKLIGHT_OUTPUT_INVERT);
+    static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);
     return &backlight;
   }
 
